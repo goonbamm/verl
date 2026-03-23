@@ -22,3 +22,30 @@ fork 전용으로 추가한 데이터 전처리 산출물/가이드를 둡니다
 2. 해당 데이터셋의 100개 샘플 JSONL을 `samples/`에 추가.
 3. `customized/reward/benchmark_rewards.py` 실행.
 4. `customized/reward/benchmark_results.md`와 `customized/reward/README.md` 결과 섹션 업데이트.
+
+## 난이도 비율 유지 리샘플링
+`resample_by_difficulty.py`를 사용하면, 다운로드받은 데이터에서 난이도 분포 비율을 유지한 채 원하는 개수로 새 데이터를 만들 수 있습니다.
+
+- 입력 포맷: `jsonl`, `parquet`
+- 출력 포맷: `parquet` (학습 데이터로 바로 사용하기 위해 parquet로 생성)
+- 난이도 키 기본값: `difficulty` (`extra_info.difficulty` 같은 중첩 키도 가능)
+- 실행 시 난이도별 `원본 비율 / 할당 비율 / 최종 출력 비율`을 함께 출력합니다.
+
+### 예시 1) 10,000개 생성 + 난이도 5 이하만 허용
+```bash
+python customized/data_preprocess/resample_by_difficulty.py \
+  --input ~/data/deepmath/train.parquet \
+  --output ~/data/deepmath/train_10k_le5.parquet \
+  --num_samples 10000 \
+  --max_difficulty 5 \
+  --allow_oversample
+```
+
+### 예시 2) 10,000개 생성 + 전체 난이도 허용
+```bash
+python customized/data_preprocess/resample_by_difficulty.py \
+  --input ~/data/deepmath/train.parquet \
+  --output ~/data/deepmath/train_10k_all.parquet \
+  --num_samples 10000 \
+  --allow_oversample
+```
