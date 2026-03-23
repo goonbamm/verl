@@ -2,13 +2,13 @@
 """난이도 비율을 유지하며 원하는 개수로 데이터셋을 재샘플링합니다.
 
 지원 포맷:
-- JSONL
-- Parquet (pandas + pyarrow 설치 시)
+- 입력: JSONL, Parquet
+- 출력: Parquet (학습 파이프라인 연계를 위해 Parquet 고정)
 
 예시:
   python customized/data_preprocess/resample_by_difficulty.py \
     --input ~/data/deepmath/train.parquet \
-    --output ~/data/deepmath/train_difficulty_le5_10k.jsonl \
+    --output ~/data/deepmath/train_difficulty_le5_10k.parquet \
     --num_samples 10000 \
     --max_difficulty 5
 """
@@ -20,13 +20,13 @@ import json
 import math
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True, help="입력 파일(.jsonl 또는 .parquet)")
-    parser.add_argument("--output", required=True, help="출력 파일(.jsonl 또는 .parquet)")
+    parser.add_argument("--output", required=True, help="출력 파일(.parquet)")
     parser.add_argument("--num_samples", required=True, type=int, help="최종 샘플 개수")
     parser.add_argument(
         "--max_difficulty",
@@ -103,12 +103,6 @@ def save_records(path: Path, records: Sequence[Dict[str, Any]]) -> None:
     suffix = path.suffix.lower()
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    if suffix == ".jsonl":
-        with path.open("w", encoding="utf-8") as f:
-            for rec in records:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        return
-
     if suffix == ".parquet":
         try:
             import pandas as pd
@@ -117,7 +111,7 @@ def save_records(path: Path, records: Sequence[Dict[str, Any]]) -> None:
         pd.DataFrame(records).to_parquet(path, index=False)
         return
 
-    raise ValueError(f"지원하지 않는 출력 포맷: {path}")
+    raise ValueError(f"출력은 .parquet 만 지원합니다: {path}")
 
 
 def allocate_by_ratio(
@@ -242,6 +236,8 @@ def main() -> None:
 
     input_path = Path(args.input).expanduser()
     output_path = Path(args.output).expanduser()
+    if output_path.suffix.lower() != ".parquet":
+        raise ValueError(f"--output 은 .parquet 이어야 합니다: {output_path}")
 
     records = load_records(input_path)
     sampled, _, _ = sample_with_ratio(
