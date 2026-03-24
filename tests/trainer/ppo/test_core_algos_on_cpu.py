@@ -317,10 +317,10 @@ def test_grpo_and_vectorized_equivalence(batch_size: int, seq_len: int, num_grou
 def test_rl_zvp_matches_grpo_on_non_zero_variance_groups():
     token_level_rewards = torch.tensor(
         [
-            [1.0, 0.0, 0.0],  # score=1
+            [0.0, 0.0, 1.0],  # score=1 (reward on EOS position)
             [0.0, 0.0, 0.0],  # score=0
-            [2.0, 0.0, 0.0],  # score=2
-            [3.0, 0.0, 0.0],  # score=3
+            [0.0, 0.0, 2.0],  # score=2 (reward on EOS position)
+            [0.0, 0.0, 3.0],  # score=3 (reward on EOS position)
         ],
         dtype=torch.float32,
     )
@@ -346,8 +346,8 @@ def test_rl_zvp_matches_grpo_on_non_zero_variance_groups():
 def test_rl_zvp_entropy_shaping_on_zero_variance_groups():
     token_level_rewards = torch.tensor(
         [
-            [1.0, 0.0, 0.0],  # group 0 positive
-            [1.0, 0.0, 0.0],  # group 0 positive
+            [0.0, 0.0, 1.0],  # group 0 positive, reward on EOS
+            [0.0, 1.0, 0.0],  # group 0 positive, reward on EOS (masked EOS at t=1)
             [0.0, 0.0, 0.0],  # group 1 negative (<=0)
             [0.0, 0.0, 0.0],  # group 1 negative (<=0)
         ],
