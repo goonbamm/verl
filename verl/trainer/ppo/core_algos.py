@@ -96,6 +96,7 @@ class AdvantageEstimator(str, Enum):
 
     GAE = "gae"
     GRPO = "grpo"
+    RL_ZVP = "rl_zvp"
     REINFORCE_PLUS_PLUS = "reinforce_plus_plus"
     REINFORCE_PLUS_PLUS_BASELINE = "reinforce_plus_plus_baseline"
     REMAX = "remax"
@@ -329,6 +330,81 @@ def compute_grpo_outcome_advantage(
         scores = scores.unsqueeze(-1) * response_mask
 
     return scores, scores
+
+
+@register_adv_est(AdvantageEstimator.RL_ZVP)
+def compute_rl_zvp_outcome_advantage(
+    token_level_rewards: torch.Tensor,
+    response_mask: torch.Tensor,
+    index: np.ndarray,
+    entropys: torch.Tensor,
+    epsilon: float = 1e-6,
+    norm_adv_by_std_in_grpo: bool = True,
+    config: Optional[AlgoConfig] = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compute RL-ZVP advantages.
+
+    For non-zero-variance groups, this reduces exactly to GRPO.
+    For zero-variance groups, apply entropy-guided shaping from Eq. (5):
+      - positive prompt (R_i > 0):  alpha * H_{i,t}
+      - negative prompt (R_i <= 0): -alpha * (max_k H_{i,k} - H_{i,t})
+
+    Reference: "No Prompt Left Behind: Exploiting Zero-Variance Prompts in LLM
+    Reinforcement Learning via Entropy-Guided Advantage Shaping", ICLR 2026.
+
+    Args:
+        token_level_rewards: (bs, response_length), outcome rewards projected to tokens.
+        response_mask: (bs, response_length), mask of valid response tokens.
+        index: (bs,), group ids.
+        entropys: (bs, response_length), per-token entropy from rollout policy.
+        epsilon: numerical stability.
+        norm_adv_by_std_in_grpo: whether to divide by std in non-zero-variance groups.
+        config: algorithm config; optional `rl_zvp_alpha` controls entropy scale.
+    """
+    if entropys is None:
+        raise ValueError("RL-ZVP requires token entropies. Please make sure `entropys` is provided in batch.")
+
+    alpha = 1.0
+    if config is not None:
+        alpha = float(config.get("rl_zvp_alpha", 1.0))
+
+    scores = token_level_rewards.sum(dim=-1)
+    advantages = torch.zeros_like(token_level_rewards, dtype=torch.float32)
+    id2indices = defaultdict(list)
+
+    with torch.no_grad():
+        bsz = scores.shape[0]
+        for i in range(bsz):
+            id2indices[index[i]].append(i)
+
+        for _, group_indices in id2indices.items():
+            group_tensor_idx = torch.as_tensor(group_indices, device=scores.device, dtype=torch.long)
+            group_scores = scores[group_tensor_idx]
+            group_mean = group_scores.mean()
+            group_std = group_scores.std()
+
+            if group_std > epsilon:
+                if norm_adv_by_std_in_grpo:
+                    group_scalar_adv = (group_scores - group_mean) / (group_std + epsilon)
+                else:
+                    group_scalar_adv = group_scores - group_mean
+                advantages[group_tensor_idx] = group_scalar_adv.unsqueeze(-1) * response_mask[group_tensor_idx]
+                continue
+
+            # Zero-variance prompt => entropy-guided shaping.
+            group_entropys = (entropys[group_tensor_idx].detach().float()) * response_mask[group_tensor_idx]
+            is_positive = bool((group_scores > 0).all().item())
+            if is_positive:
+                group_adv = alpha * group_entropys
+            else:
+                # max entropy over valid response tokens for each sample
+                masked_entropys = group_entropys.masked_fill(response_mask[group_tensor_idx] <= 0, -torch.inf)
+                max_entropy = masked_entropys.max(dim=-1, keepdim=True).values
+                max_entropy = torch.where(torch.isfinite(max_entropy), max_entropy, torch.zeros_like(max_entropy))
+                group_adv = -alpha * (max_entropy - group_entropys)
+            advantages[group_tensor_idx] = group_adv * response_mask[group_tensor_idx]
+
+    return advantages, advantages
 
 
 @register_adv_est(AdvantageEstimator.GRPO_VECTORIZED)
