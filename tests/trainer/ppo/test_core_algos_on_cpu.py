@@ -24,6 +24,7 @@ from verl.trainer.ppo.core_algos import (
     compute_gae_advantage_return,
     compute_grpo_outcome_advantage,
     compute_grpo_vectorized_outcome_advantage,
+    compute_rl_zvp_outcome_advantage,
     compute_rloo_outcome_advantage,
     compute_rloo_vectorized_outcome_advantage,
     get_adv_estimator_fn,
@@ -311,6 +312,84 @@ def test_grpo_and_vectorized_equivalence(batch_size: int, seq_len: int, num_grou
     assert ret1.shape == ret2.shape == (batch_size, seq_len)
     assert torch.allclose(adv1, adv2, rtol=1e-5, atol=1e-6)
     assert torch.allclose(ret1, ret2, rtol=1e-5, atol=1e-6)
+
+
+def test_rl_zvp_matches_grpo_on_non_zero_variance_groups():
+    token_level_rewards = torch.tensor(
+        [
+            [0.0, 0.0, 1.0],  # score=1 (reward on EOS position)
+            [0.0, 0.0, 0.0],  # score=0
+            [0.0, 0.0, 2.0],  # score=2 (reward on EOS position)
+            [0.0, 0.0, 3.0],  # score=3 (reward on EOS position)
+        ],
+        dtype=torch.float32,
+    )
+    response_mask = torch.ones_like(token_level_rewards)
+    index = np.asarray([0, 0, 1, 1], dtype=np.int64)
+    entropys = torch.rand_like(token_level_rewards)
+
+    grpo_adv, _ = compute_grpo_outcome_advantage(
+        token_level_rewards=token_level_rewards,
+        response_mask=response_mask,
+        index=index,
+    )
+    rl_zvp_adv, _ = compute_rl_zvp_outcome_advantage(
+        token_level_rewards=token_level_rewards,
+        response_mask=response_mask,
+        index=index,
+        entropys=entropys,
+    )
+
+    assert torch.allclose(grpo_adv, rl_zvp_adv, atol=1e-6, rtol=1e-5)
+
+
+def test_rl_zvp_entropy_shaping_on_zero_variance_groups():
+    token_level_rewards = torch.tensor(
+        [
+            [0.0, 0.0, 1.0],  # group 0 positive, reward on EOS
+            [0.0, 1.0, 0.0],  # group 0 positive, reward on EOS (masked EOS at t=1)
+            [0.0, 0.0, 0.0],  # group 1 negative (<=0)
+            [0.0, 0.0, 0.0],  # group 1 negative (<=0)
+        ],
+        dtype=torch.float32,
+    )
+    response_mask = torch.tensor(
+        [
+            [1.0, 1.0, 1.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [1.0, 1.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    entropys = torch.tensor(
+        [
+            [0.2, 0.5, 0.9],  # positive => alpha * entropy
+            [0.1, 0.7, 0.4],  # last token masked
+            [0.2, 0.5, 0.1],  # negative => -alpha(max - entropy)
+            [0.8, 0.3, 0.4],  # last token masked
+        ],
+        dtype=torch.float32,
+    )
+    index = np.asarray([0, 0, 1, 1], dtype=np.int64)
+
+    rl_zvp_adv, _ = compute_rl_zvp_outcome_advantage(
+        token_level_rewards=token_level_rewards,
+        response_mask=response_mask,
+        index=index,
+        entropys=entropys,
+    )
+
+    expected = torch.tensor(
+        [
+            [0.2, 0.5, 0.9],
+            [0.1, 0.7, 0.0],
+            [-0.3, -0.0, -0.4],  # max=0.5
+            [-0.0, -0.5, -0.0],  # max(valid)=0.8
+        ],
+        dtype=torch.float32,
+    )
+    assert torch.allclose(rl_zvp_adv, expected, atol=1e-6, rtol=1e-6)
 
 
 if __name__ == "__main__":
