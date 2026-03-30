@@ -12,6 +12,9 @@ DeepMath 전용 custom reward 함수와 벤치마크 스크립트입니다.
 - `openr1_math_reward.py`
   - `compute_score(data_source, solution_str, ground_truth, extra_info=None, **kwargs)`
   - OpenR1-Math용 권장 custom reward (내부적으로 `math_reward` 사용)
+- `skywork_or1_math_reward.py`
+  - `compute_score(data_source, solution_str, ground_truth, extra_info=None, **kwargs)`
+  - Skywork-OR1-Math용 권장 custom reward (내부적으로 `math_reward` 사용)
 - `benchmark_rewards.py`
   - 저장된 샘플셋(JSONL)에 대해 여러 리워드 방식의 점수/속도 비교
   - 기본 비교 대상: `deepmath_reward`, `math_reward`, `math_dapo_default`, `math_dapo_strict_box`
@@ -40,6 +43,10 @@ reward.custom_reward_function.name=compute_score
 
 # OpenR1-Math
 reward.custom_reward_function.path=$PROJECT_DIR/customized/reward/openr1_math_reward.py \
+reward.custom_reward_function.name=compute_score
+
+# Skywork-OR1-Math
+reward.custom_reward_function.path=$PROJECT_DIR/customized/reward/skywork_or1_math_reward.py \
 reward.custom_reward_function.name=compute_score
 ```
 
