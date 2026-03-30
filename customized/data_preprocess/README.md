@@ -17,6 +17,11 @@ fork 전용으로 추가한 데이터 전처리 산출물/가이드를 둡니다
   - `reference_solution`은 `ground_truth`와 일치하도록 정리된 골든 샘플
   - `customized/reward/benchmark_rewards.py`의 기본 입력 파일로 사용
 
+- `samples/orz_math_72k_verl_sample_100.jsonl`
+  - `sungyub/orz-math-72k-verl` train split 앞 100개 샘플
+  - 필드: `id`, `data_source`, `question`, `ground_truth`, `reference_solution`
+  - `customized/reward/benchmark_rewards.py` 입력으로 리워드 비교 가능
+
 ## 운영 가이드 (데이터셋 추가 시)
 1. 신규 데이터셋 전처리 스크립트 추가.
 2. 해당 데이터셋의 100개 샘플 JSONL을 `samples/`에 추가.
