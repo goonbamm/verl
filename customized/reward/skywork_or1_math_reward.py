@@ -1,12 +1,13 @@
 """Custom reward function for Skywork-OR1-Math dataset.
 
-This reward intentionally reuses verl's built-in `math_reward` because Skywork
-OR1 math samples are math QA entries with final-answer conventions.
+Based on local benchmark runs on existing 100-sample math benchmark sets,
+`math_dapo` with `strict_box_verify=True` matched the top accuracy while being
+the fastest implementation among top-scoring candidates.
 """
 
 from __future__ import annotations
 
-from verl.utils.reward_score.math_reward import compute_score as base_math_reward
+from verl.utils.reward_score.math_dapo import compute_score as math_dapo_reward
 
 
 def compute_score(
@@ -16,7 +17,7 @@ def compute_score(
     extra_info: dict | None = None,
     **kwargs,
 ) -> float:
-    """Compute Skywork-OR1-Math reward using verl's built-in math reward.
+    """Compute Skywork-OR1-Math reward using strict boxed-answer matching.
 
     Args:
         data_source: Dataset identifier from parquet (kept for compatibility).
@@ -26,7 +27,7 @@ def compute_score(
         **kwargs: Forward-compatible extra kwargs from reward manager.
 
     Returns:
-        float: Reward score from `math_reward` (0.0 or 1.0).
+        float: Reward score from `math_dapo` strict box verification.
     """
     del data_source, extra_info, kwargs
-    return float(base_math_reward(solution_str=solution_str, ground_truth=ground_truth))
+    return float(math_dapo_reward(solution_str=solution_str, ground_truth=ground_truth, strict_box_verify=True))

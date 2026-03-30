@@ -14,7 +14,7 @@ DeepMath 전용 custom reward 함수와 벤치마크 스크립트입니다.
   - OpenR1-Math용 권장 custom reward (내부적으로 `math_reward` 사용)
 - `skywork_or1_math_reward.py`
   - `compute_score(data_source, solution_str, ground_truth, extra_info=None, **kwargs)`
-  - Skywork-OR1-Math용 권장 custom reward (내부적으로 `math_reward` 사용)
+  - Skywork-OR1-Math용 권장 custom reward (내부적으로 `math_dapo(strict_box_verify=True)` 사용)
 - `benchmark_rewards.py`
   - 저장된 샘플셋(JSONL)에 대해 여러 리워드 방식의 점수/속도 비교
   - 기본 비교 대상: `deepmath_reward`, `math_reward`, `math_dapo_default`, `math_dapo_strict_box`
@@ -77,3 +77,8 @@ PYTHONPATH=. python customized/reward/benchmark_rewards.py \
   - 결과: `deepmath_reward`, `math_reward`, `math_dapo_strict_box`, `math_verify`가 모두 `mean_score=1.0000`으로 공동 1위
   - 채택: OpenR1 custom reward는 기존 파이프라인 호환성과 점수 안정성을 고려해 `math_reward` 기반(`openr1_math_reward.py`)을 기본값으로 사용
   - 상세 표: `benchmark_results_openr1_math.md`
+- 샘플 4: 기존 100개 샘플셋 3종(DeepMath/ORZ/OpenR1) 재평가
+  - 실행일: 2026-03-30 (UTC)
+  - 결과: `math_dapo_strict_box`가 모든 샘플셋에서 `mean_score=1.0000`을 유지하면서 가장 빠른 `per_sample_ms`를 기록
+  - 채택: Skywork custom reward는 정확도 동률 상위군 중 속도 우위를 반영해 `math_dapo_strict_box` 기반(`skywork_or1_math_reward.py`)으로 설정
+  - 상세 표: `benchmark_results_math_reward_selection.md`

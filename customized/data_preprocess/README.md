@@ -27,12 +27,6 @@ fork 전용으로 추가한 데이터 전처리 산출물/가이드를 둡니다
   - 필드: `id`, `data_source`, `question`, `ground_truth`, `reference_solution`
   - `customized/reward/benchmark_rewards.py` 입력으로 리워드 비교 가능
 
-- `samples/skywork_or1_math_verl_sample_100.jsonl`
-  - `sungyub/skywork-or1-math-verl` train split 앞 100개 샘플
-  - 필드: `id`, `data_source`, `question`, `ground_truth`, `reference_solution`
-  - 생성 스크립트: `export_skywork_or1_math_sample_100.py`
-  - `customized/reward/benchmark_rewards.py` 입력으로 리워드 비교 가능
-
 ## 운영 가이드 (데이터셋 추가 시)
 1. 신규 데이터셋 전처리 스크립트 추가.
 2. 해당 데이터셋의 100개 샘플 JSONL을 `samples/`에 추가.
