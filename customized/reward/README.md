@@ -9,6 +9,9 @@ DeepMath 전용 custom reward 함수와 벤치마크 스크립트입니다.
 - `orz_math_reward.py`
   - `compute_score(data_source, solution_str, ground_truth, extra_info=None, **kwargs)`
   - ORZ-Math-72k용 권장 custom reward (내부적으로 `math_reward` 사용)
+- `openr1_math_reward.py`
+  - `compute_score(data_source, solution_str, ground_truth, extra_info=None, **kwargs)`
+  - OpenR1-Math용 권장 custom reward (내부적으로 `math_reward` 사용)
 - `benchmark_rewards.py`
   - 저장된 샘플셋(JSONL)에 대해 여러 리워드 방식의 점수/속도 비교
   - 기본 비교 대상: `deepmath_reward`, `math_reward`, `math_dapo_default`, `math_dapo_strict_box`
@@ -34,6 +37,10 @@ reward.custom_reward_function.name=compute_score
 # ORZ-Math-72k
 reward.custom_reward_function.path=$PROJECT_DIR/customized/reward/orz_math_reward.py \
 reward.custom_reward_function.name=compute_score
+
+# OpenR1-Math
+reward.custom_reward_function.path=$PROJECT_DIR/customized/reward/openr1_math_reward.py \
+reward.custom_reward_function.name=compute_score
 ```
 
 ### 2) 샘플셋으로 리워드 방식 벤치마크
@@ -58,3 +65,8 @@ PYTHONPATH=. python customized/reward/benchmark_rewards.py \
   - 결과: `deepmath_reward`, `math_reward`, `math_dapo_strict_box`, `math_verify`가 모두 `mean_score=1.0000`으로 공동 1위
   - 채택: ORZ custom reward는 기존 파이프라인 호환성과 점수 안정성을 고려해 `math_reward` 기반(`orz_math_reward.py`)을 기본값으로 사용
   - 상세 표: `benchmark_results_orz_math_72k.md`
+- 샘플 3: `customized/data_preprocess/samples/openr1_math_verl_sample_100.jsonl` (100개)
+  - 실행일: 2026-03-30 (UTC)
+  - 결과: `deepmath_reward`, `math_reward`, `math_dapo_strict_box`, `math_verify`가 모두 `mean_score=1.0000`으로 공동 1위
+  - 채택: OpenR1 custom reward는 기존 파이프라인 호환성과 점수 안정성을 고려해 `math_reward` 기반(`openr1_math_reward.py`)을 기본값으로 사용
+  - 상세 표: `benchmark_results_openr1_math.md`
