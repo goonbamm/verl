@@ -122,6 +122,27 @@ def _ensure_model_dict(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _normalize_row_identity_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, sort_keys=True, ensure_ascii=False)
+    except TypeError:
+        return str(value)
+
+
+def _build_row_identity(df: pd.DataFrame) -> pd.Series:
+    required_cols = ["prompt", "data_source"]
+    missing = [col for col in required_cols if col not in df.columns]
+    if missing:
+        raise KeyError(f"Cannot validate row identity. Missing required columns: {missing}")
+
+    prompt_key = df["prompt"].map(_normalize_row_identity_value)
+    data_source_key = df["data_source"].map(_normalize_row_identity_value)
+    ground_truth_key = df.apply(_extract_ground_truth, axis=1).map(_normalize_row_identity_value)
+    return prompt_key + "||" + data_source_key + "||" + ground_truth_key
+
+
 def _annotate_row(idx: int, row: pd.Series, args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     if not args.overwrite and DIFFICULTY_COL in row and pd.notna(row[DIFFICULTY_COL]):
         existing_model = row.get(DIFFICULTY_MODEL_COL)
@@ -131,9 +152,9 @@ def _annotate_row(idx: int, row: pd.Series, args: argparse.Namespace) -> tuple[i
                 PASS_RATE_COL: row.get(PASS_RATE_COL),
                 NUM_SAMPLES_COL: row.get(NUM_SAMPLES_COL),
                 DIFFICULTY_MODEL_COL: row.get(DIFFICULTY_MODEL_COL, args.model),
-                DIFFICULTY_BY_MODEL_COL: row.get(DIFFICULTY_BY_MODEL_COL),
-                PASS_RATE_BY_MODEL_COL: row.get(PASS_RATE_BY_MODEL_COL),
-                NUM_SAMPLES_BY_MODEL_COL: row.get(NUM_SAMPLES_BY_MODEL_COL),
+                DIFFICULTY_BY_MODEL_COL: _ensure_model_dict(row.get(DIFFICULTY_BY_MODEL_COL)),
+                PASS_RATE_BY_MODEL_COL: _ensure_model_dict(row.get(PASS_RATE_BY_MODEL_COL)),
+                NUM_SAMPLES_BY_MODEL_COL: _ensure_model_dict(row.get(NUM_SAMPLES_BY_MODEL_COL)),
             }
 
     messages = _ensure_messages(row["prompt"])
@@ -182,6 +203,31 @@ def main() -> None:
         logger.info("Found existing output parquet. Reusing prior annotations: %s", args.output_parquet)
         prev_df = pd.read_parquet(args.output_parquet)
         if len(prev_df) == len(out_df):
+            try:
+                current_identity = _build_row_identity(out_df)
+                previous_identity = _build_row_identity(prev_df)
+            except KeyError as err:
+                logger.warning("Skip reusing existing output: %s", err)
+                current_identity = None
+                previous_identity = None
+            if current_identity is None or previous_identity is None:
+                identities_match = False
+            else:
+                identities_match = current_identity.equals(previous_identity)
+            if not identities_match:
+                logger.warning(
+                    "Skip reusing existing output: row identity mismatch (input rows differ or reordered)"
+                )
+                prev_df = None
+        else:
+            logger.warning(
+                "Skip reusing existing output: row count mismatch (prev=%d, current=%d)",
+                len(prev_df),
+                len(out_df),
+            )
+            prev_df = None
+
+        if prev_df is not None:
             merge_cols = [
                 DIFFICULTY_COL,
                 PASS_RATE_COL,
@@ -197,12 +243,6 @@ def main() -> None:
                         out_df[col] = prev_df[col]
                     else:
                         out_df[col] = out_df[col].combine_first(prev_df[col])
-        else:
-            logger.warning(
-                "Skip reusing existing output: row count mismatch (prev=%d, current=%d)",
-                len(prev_df),
-                len(out_df),
-            )
 
     for start in range(0, len(out_df), args.batch_size):
         end = min(start + args.batch_size, len(out_df))
