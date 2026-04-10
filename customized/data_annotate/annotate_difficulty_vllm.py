@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
@@ -25,6 +26,9 @@ DIFFICULTY_COL = "on_policy_difficulty"
 PASS_RATE_COL = "pass_rate"
 NUM_SAMPLES_COL = "difficulty_num_samples"
 DIFFICULTY_MODEL_COL = "on_policy_difficulty_model"
+DIFFICULTY_BY_MODEL_COL = "on_policy_difficulty_by_model"
+PASS_RATE_BY_MODEL_COL = "pass_rate_by_model"
+NUM_SAMPLES_BY_MODEL_COL = "difficulty_num_samples_by_model"
 REQUEST_TIMEOUT_S = 120
 
 
@@ -105,14 +109,32 @@ def _score(data_source: str, response: str, ground_truth: Any, row: pd.Series) -
     return 1.0 if float(result) > 0 else 0.0
 
 
+def _ensure_model_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+    return {}
+
+
 def _annotate_row(idx: int, row: pd.Series, args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     if not args.overwrite and DIFFICULTY_COL in row and pd.notna(row[DIFFICULTY_COL]):
-        return idx, {
-            DIFFICULTY_COL: row[DIFFICULTY_COL],
-            PASS_RATE_COL: row.get(PASS_RATE_COL),
-            NUM_SAMPLES_COL: row.get(NUM_SAMPLES_COL),
-            DIFFICULTY_MODEL_COL: row.get(DIFFICULTY_MODEL_COL, args.model),
-        }
+        existing_model = row.get(DIFFICULTY_MODEL_COL)
+        if existing_model == args.model:
+            return idx, {
+                DIFFICULTY_COL: row[DIFFICULTY_COL],
+                PASS_RATE_COL: row.get(PASS_RATE_COL),
+                NUM_SAMPLES_COL: row.get(NUM_SAMPLES_COL),
+                DIFFICULTY_MODEL_COL: row.get(DIFFICULTY_MODEL_COL, args.model),
+                DIFFICULTY_BY_MODEL_COL: row.get(DIFFICULTY_BY_MODEL_COL),
+                PASS_RATE_BY_MODEL_COL: row.get(PASS_RATE_BY_MODEL_COL),
+                NUM_SAMPLES_BY_MODEL_COL: row.get(NUM_SAMPLES_BY_MODEL_COL),
+            }
 
     messages = _ensure_messages(row["prompt"])
     data_source = row["data_source"]
@@ -126,11 +148,24 @@ def _annotate_row(idx: int, row: pd.Series, args: argparse.Namespace) -> tuple[i
 
     correct = [_score(data_source, r, ground_truth, row) for r in responses]
     pass_rate = sum(correct) / len(correct)
+    difficulty = 1.0 - pass_rate
+
+    difficulty_by_model = _ensure_model_dict(row.get(DIFFICULTY_BY_MODEL_COL))
+    pass_rate_by_model = _ensure_model_dict(row.get(PASS_RATE_BY_MODEL_COL))
+    num_samples_by_model = _ensure_model_dict(row.get(NUM_SAMPLES_BY_MODEL_COL))
+
+    difficulty_by_model[args.model] = difficulty
+    pass_rate_by_model[args.model] = pass_rate
+    num_samples_by_model[args.model] = len(correct)
+
     return idx, {
-        DIFFICULTY_COL: 1.0 - pass_rate,
+        DIFFICULTY_COL: difficulty,
         PASS_RATE_COL: pass_rate,
         NUM_SAMPLES_COL: len(correct),
         DIFFICULTY_MODEL_COL: args.model,
+        DIFFICULTY_BY_MODEL_COL: difficulty_by_model,
+        PASS_RATE_BY_MODEL_COL: pass_rate_by_model,
+        NUM_SAMPLES_BY_MODEL_COL: num_samples_by_model,
     }
 
 
@@ -143,6 +178,32 @@ def main() -> None:
         df = df.head(args.dry_run_n).copy()
 
     out_df = df.copy()
+    if os.path.exists(args.output_parquet):
+        logger.info("Found existing output parquet. Reusing prior annotations: %s", args.output_parquet)
+        prev_df = pd.read_parquet(args.output_parquet)
+        if len(prev_df) == len(out_df):
+            merge_cols = [
+                DIFFICULTY_COL,
+                PASS_RATE_COL,
+                NUM_SAMPLES_COL,
+                DIFFICULTY_MODEL_COL,
+                DIFFICULTY_BY_MODEL_COL,
+                PASS_RATE_BY_MODEL_COL,
+                NUM_SAMPLES_BY_MODEL_COL,
+            ]
+            for col in merge_cols:
+                if col in prev_df:
+                    if col not in out_df:
+                        out_df[col] = prev_df[col]
+                    else:
+                        out_df[col] = out_df[col].combine_first(prev_df[col])
+        else:
+            logger.warning(
+                "Skip reusing existing output: row count mismatch (prev=%d, current=%d)",
+                len(prev_df),
+                len(out_df),
+            )
+
     for start in range(0, len(out_df), args.batch_size):
         end = min(start + args.batch_size, len(out_df))
         logger.info("Processing rows %d..%d", start, end - 1)

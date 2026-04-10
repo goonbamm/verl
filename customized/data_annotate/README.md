@@ -31,4 +31,14 @@ python customized/data_annotate/annotate_difficulty_vllm.py \
 - `pass_rate`
 - `difficulty_num_samples`
 - `on_policy_difficulty_model`
+- `on_policy_difficulty_by_model` (모델별 난이도 dict)
+- `pass_rate_by_model` (모델별 pass_rate dict)
+- `difficulty_num_samples_by_model` (모델별 샘플 수 dict)
 
+기존 단일 컬럼(`on_policy_difficulty`, `pass_rate`, `difficulty_num_samples`)은
+**마지막으로 어노테이션한 모델 기준 값**으로 유지됩니다.
+여러 모델로 반복 실행하면 `*_by_model` 컬럼에 모델별 값이 누적됩니다.
+
+또한 `--output_parquet` 파일이 이미 존재하면, 기존 파일의 모델별 컬럼을 먼저 읽어와서
+현재 실행 결과에 병합한 뒤 저장합니다(행 개수가 동일한 경우).  
+즉, 같은 입력 데이터에 대해 모델만 바꿔 여러 번 실행해도 기존 모델 결과가 덮어써지지 않습니다.
