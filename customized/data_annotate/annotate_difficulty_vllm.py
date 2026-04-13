@@ -55,7 +55,10 @@ def _ensure_messages(prompt_value: Any) -> list[dict[str, Any]]:
     if isinstance(prompt_value, str):
         candidate = prompt_value.strip()
         if candidate.startswith("["):
-            parsed = json.loads(candidate)
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                parsed = None
             if isinstance(parsed, list):
                 return parsed
         return [{"role": "user", "content": prompt_value}]
