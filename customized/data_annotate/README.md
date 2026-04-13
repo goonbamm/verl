@@ -3,6 +3,36 @@
 `annotate_difficulty_vllm.py`는 parquet 데이터를 읽어서,
 vLLM(OpenAI-compatible endpoint)로 여러 번 샘플링한 pass-rate 기반 난이도를 저장합니다.
 
+## on-policy difficulty 측정 흐름 (시각화)
+
+```mermaid
+flowchart TD
+    A[입력 parquet 로드] --> B[프롬프트/정답 컬럼 파싱]
+    B --> C[vLLM으로 동일 프롬프트 N회 샘플링]
+    C --> D[각 샘플 정답 여부 채점]
+    D --> E[pass_rate = 정답 수 / N]
+    E --> F[on_policy_difficulty = 1 - pass_rate]
+    F --> G[행별 difficulty/pass_rate 저장]
+
+    G --> H{기존 output parquet 존재?}
+    H -- No --> I[새 parquet 저장]
+    H -- Yes --> J[기존 *_by_model 컬럼 로드]
+    J --> K[현재 모델 결과와 병합]
+    K --> I
+
+    I --> L[단일 컬럼 갱신
+on_policy_difficulty, pass_rate, difficulty_num_samples]
+    I --> M[모델별 컬럼 누적
+on_policy_difficulty_by_model,
+pass_rate_by_model,
+difficulty_num_samples_by_model]
+```
+
+### 해석 포인트
+- 난이도는 **정답률(pass_rate)의 보수**로 정의됩니다: `on_policy_difficulty = 1 - pass_rate`.
+- `--num_samples_per_prompt`가 클수록 pass-rate 추정이 안정적이지만, 비용/시간이 증가합니다.
+- 동일 데이터에 대해 모델을 바꿔 반복 실행하면 `*_by_model` 컬럼에 모델별 결과가 누적됩니다.
+
 ## 실행 예시
 
 ```bash
