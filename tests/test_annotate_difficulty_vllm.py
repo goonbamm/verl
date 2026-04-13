@@ -1,5 +1,6 @@
 import json
 
+import numpy as np
 import pandas as pd
 
 from customized.data_annotate.annotate_difficulty_vllm import (
@@ -29,6 +30,11 @@ class DummyArgs:
 def test_ensure_messages_handles_non_json_bracket_string():
     raw = "[Not JSON but a user prompt]"
     assert _ensure_messages(raw) == [{"role": "user", "content": raw}]
+
+
+def test_ensure_messages_handles_numpy_array():
+    prompt = np.array([{"role": "user", "content": "hello"}], dtype=object)
+    assert _ensure_messages(prompt) == [{"role": "user", "content": "hello"}]
 
 
 def test_build_row_identity_uses_ground_truth_fallback_column():

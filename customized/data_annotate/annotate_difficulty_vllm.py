@@ -50,8 +50,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def _ensure_messages(prompt_value: Any) -> list[dict[str, Any]]:
+    if hasattr(prompt_value, "tolist") and not isinstance(prompt_value, (str, bytes)):
+        prompt_value = prompt_value.tolist()
     if isinstance(prompt_value, list):
         return prompt_value
+    if isinstance(prompt_value, tuple):
+        return list(prompt_value)
     if isinstance(prompt_value, str):
         candidate = prompt_value.strip()
         if candidate.startswith("["):
