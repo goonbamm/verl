@@ -11,10 +11,12 @@ import argparse
 import json
 import logging
 import os
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import pandas as pd
+import pyarrow.parquet as pq
 import requests
 
 from verl.utils.reward_score import default_compute_score
@@ -197,71 +199,96 @@ def _annotate_row(idx: int, row: pd.Series, args: argparse.Namespace) -> tuple[i
     }
 
 
+def _iter_parquet_chunks(paths: list[str], chunk_size: int):
+    for path in paths:
+        parquet_file = pq.ParquetFile(path)
+        for batch in parquet_file.iter_batches(batch_size=chunk_size):
+            yield batch.to_pandas(types_mapper=pd.ArrowDtype)
+
+
+def _merge_part_files(part_files: list[str], output_path: str) -> None:
+    writer = None
+    try:
+        for part_path in part_files:
+            table = pq.read_table(part_path)
+            if writer is None:
+                writer = pq.ParquetWriter(output_path, table.schema)
+            writer.write_table(table)
+    finally:
+        if writer is not None:
+            writer.close()
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = parse_args()
 
-    df = pd.concat([pd.read_parquet(path) for path in args.input_parquet], ignore_index=True)
-    if args.dry_run_n is not None:
-        df = df.head(args.dry_run_n).copy()
-
-    out_df = df.copy()
+    merge_cols = [
+        DIFFICULTY_COL,
+        PASS_RATE_COL,
+        NUM_SAMPLES_COL,
+        DIFFICULTY_MODEL_COL,
+        DIFFICULTY_BY_MODEL_COL,
+        PASS_RATE_BY_MODEL_COL,
+        NUM_SAMPLES_BY_MODEL_COL,
+    ]
+    prev_df = None
     if os.path.exists(args.output_parquet):
         logger.info("Found existing output parquet. Reusing prior annotations: %s", args.output_parquet)
-        prev_df = pd.read_parquet(args.output_parquet)
-        if len(prev_df) == len(out_df):
-            try:
-                current_identity = _build_row_identity(out_df)
-                previous_identity = _build_row_identity(prev_df)
-            except KeyError as err:
-                logger.warning("Skip reusing existing output: %s", err)
-                current_identity = None
-                previous_identity = None
-            if current_identity is None or previous_identity is None:
-                identities_match = False
-            else:
-                identities_match = current_identity.equals(previous_identity)
-            if not identities_match:
-                logger.warning(
-                    "Skip reusing existing output: row identity mismatch (input rows differ or reordered)"
-                )
-                prev_df = None
-        else:
-            logger.warning(
-                "Skip reusing existing output: row count mismatch (prev=%d, current=%d)",
-                len(prev_df),
-                len(out_df),
-            )
+        prev_schema_cols = set(pq.ParquetFile(args.output_parquet).schema_arrow.names)
+        prev_key_cols = [col for col in ("prompt", "data_source", "reward_model", "ground_truth") if col in prev_schema_cols]
+        prev_merge_cols = [col for col in merge_cols if col in prev_schema_cols]
+        try:
+            prev_df = pd.read_parquet(args.output_parquet, columns=prev_key_cols + prev_merge_cols)
+            prev_df["__row_identity"] = _build_row_identity(prev_df)
+            prev_df = prev_df[["__row_identity"] + prev_merge_cols].drop_duplicates("__row_identity")
+            prev_df = prev_df.set_index("__row_identity")
+        except Exception as err:
+            logger.warning("Skip reusing existing output: %s", err)
             prev_df = None
 
-        if prev_df is not None:
-            merge_cols = [
-                DIFFICULTY_COL,
-                PASS_RATE_COL,
-                NUM_SAMPLES_COL,
-                DIFFICULTY_MODEL_COL,
-                DIFFICULTY_BY_MODEL_COL,
-                PASS_RATE_BY_MODEL_COL,
-                NUM_SAMPLES_BY_MODEL_COL,
-            ]
-            for col in merge_cols:
-                if col in prev_df:
-                    if col not in out_df:
-                        out_df[col] = prev_df[col]
-                    else:
-                        out_df[col] = out_df[col].combine_first(prev_df[col])
+    part_files: list[str] = []
+    processed_rows = 0
+    dry_run_remaining = args.dry_run_n
+    with tempfile.TemporaryDirectory(prefix="annotate_difficulty_parts_") as temp_dir:
+        for chunk_df in _iter_parquet_chunks(args.input_parquet, args.batch_size):
+            if dry_run_remaining is not None:
+                if dry_run_remaining <= 0:
+                    break
+                if len(chunk_df) > dry_run_remaining:
+                    chunk_df = chunk_df.iloc[:dry_run_remaining].copy()
+                dry_run_remaining -= len(chunk_df)
+            else:
+                chunk_df = chunk_df.copy()
 
-    for start in range(0, len(out_df), args.batch_size):
-        end = min(start + args.batch_size, len(out_df))
-        logger.info("Processing rows %d..%d", start, end - 1)
-        with ThreadPoolExecutor(max_workers=args.concurrency) as ex:
-            futures = [ex.submit(_annotate_row, i, out_df.iloc[i], args) for i in range(start, end)]
-            for future in as_completed(futures):
-                idx, values = future.result()
-                for key, value in values.items():
-                    out_df.at[idx, key] = value
+            chunk_df["__row_identity"] = _build_row_identity(chunk_df)
+            if prev_df is not None:
+                reused = prev_df.reindex(chunk_df["__row_identity"])
+                for col in merge_cols:
+                    if col in reused:
+                        if col not in chunk_df:
+                            chunk_df[col] = reused[col].to_numpy()
+                        else:
+                            chunk_df[col] = chunk_df[col].combine_first(reused[col].reset_index(drop=True))
 
-    out_df.to_parquet(args.output_parquet, index=False)
+            logger.info("Processing rows %d..%d", processed_rows, processed_rows + len(chunk_df) - 1)
+            with ThreadPoolExecutor(max_workers=args.concurrency) as ex:
+                futures = [ex.submit(_annotate_row, i, chunk_df.iloc[i], args) for i in range(len(chunk_df))]
+                for future in as_completed(futures):
+                    idx, values = future.result()
+                    for key, value in values.items():
+                        chunk_df.at[idx, key] = value
+
+            chunk_df = chunk_df.drop(columns="__row_identity")
+            part_path = os.path.join(temp_dir, f"output_part_{len(part_files):05d}.parquet")
+            chunk_df.to_parquet(part_path, index=False)
+            part_files.append(part_path)
+            processed_rows += len(chunk_df)
+
+        if not part_files:
+            raise RuntimeError("No rows were processed; nothing to write.")
+        _merge_part_files(part_files, args.output_parquet)
+
     logger.info("Saved: %s", args.output_parquet)
 
 
