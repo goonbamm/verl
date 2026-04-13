@@ -20,6 +20,7 @@ from typing import Any
 import pandas as pd
 import pyarrow.parquet as pq
 import requests
+from tqdm.auto import tqdm
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 
@@ -280,6 +281,15 @@ def _merge_part_files(part_files: list[str], output_path: str) -> None:
             writer.close()
 
 
+def _estimate_total_rows(paths: list[str], limit: int | None) -> int:
+    total = 0
+    for path in paths:
+        total += pq.ParquetFile(path).metadata.num_rows
+        if limit is not None and total >= limit:
+            return limit
+    return total
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = parse_args()
@@ -310,9 +320,15 @@ def main() -> None:
 
     part_files: list[str] = []
     processed_rows = 0
+    estimated_total_rows = _estimate_total_rows(args.input_parquet, args.dry_run_n)
     overall_start_wall = time.perf_counter()
     overall_start_cpu = time.process_time()
     dry_run_remaining = args.dry_run_n
+    progress_bar = tqdm(
+        total=estimated_total_rows if estimated_total_rows > 0 else None,
+        desc="Annotating difficulty",
+        unit="row",
+    )
     try:
         with tempfile.TemporaryDirectory(prefix="annotate_difficulty_parts_") as temp_dir:
             # Keep one shared thread pool across all batches; batch boundaries are only for backpressure.
@@ -349,6 +365,7 @@ def main() -> None:
                         idx, values = future.result()
                         for key, value in values.items():
                             chunk_df.at[idx, key] = value
+                        progress_bar.update(1)
                     collect_wall_s = time.perf_counter() - collect_wall_start
                     batch_wall_s = time.perf_counter() - batch_wall_start
                     batch_cpu_s = time.process_time() - batch_cpu_start
@@ -378,6 +395,7 @@ def main() -> None:
                 raise RuntimeError("No rows were processed; nothing to write.")
             _merge_part_files(part_files, args.output_parquet)
     finally:
+        progress_bar.close()
         _close_all_sessions()
 
     overall_wall_s = time.perf_counter() - overall_start_wall
