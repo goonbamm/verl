@@ -72,3 +72,6 @@ python customized/data_annotate/annotate_difficulty_vllm.py \
 또한 `--output_parquet` 파일이 이미 존재하면, 기존 파일의 모델별 컬럼을 먼저 읽어와서
 현재 실행 결과에 병합한 뒤 저장합니다(행 개수가 동일한 경우).  
 즉, 같은 입력 데이터에 대해 모델만 바꿔 여러 번 실행해도 기존 모델 결과가 덮어써지지 않습니다.
+
+호환성: 기존 파일/입력 데이터에 `*_by_model` 컬럼이 없어도 실행 시 자동으로 빈 dict로 초기화됩니다.  
+기존 parquet 재사용 경로에서도 비어 있거나 NaN인 모델별 컬럼은 dict 형태로 정규화해 안전하게 병합됩니다.
