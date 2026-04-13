@@ -194,6 +194,15 @@ def _ensure_model_dict(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _ensure_model_columns(df: pd.DataFrame) -> pd.DataFrame:
+    for col in (DIFFICULTY_BY_MODEL_COL, PASS_RATE_BY_MODEL_COL, NUM_SAMPLES_BY_MODEL_COL):
+        if col not in df.columns:
+            df[col] = [{} for _ in range(len(df))]
+        else:
+            df[col] = df[col].map(_ensure_model_dict)
+    return df
+
+
 def _normalize_row_identity_value(value: Any) -> str:
     if isinstance(value, str):
         return value
@@ -342,10 +351,14 @@ def main() -> None:
                         dry_run_remaining -= len(chunk_df)
                     else:
                         chunk_df = chunk_df.copy()
+                    _ensure_model_columns(chunk_df)
 
                     chunk_df["__row_identity"] = _build_row_identity(chunk_df)
                     if prev_df is not None:
                         reused = prev_df.reindex(chunk_df["__row_identity"])
+                        for col in (DIFFICULTY_BY_MODEL_COL, PASS_RATE_BY_MODEL_COL, NUM_SAMPLES_BY_MODEL_COL):
+                            if col in reused:
+                                reused[col] = reused[col].map(_ensure_model_dict)
                         for col in merge_cols:
                             if col in reused:
                                 if col not in chunk_df:

@@ -2,7 +2,9 @@ import json
 
 import numpy as np
 import pandas as pd
+import pytest
 
+import customized.data_annotate.annotate_difficulty_vllm as annotate_mod
 from customized.data_annotate.annotate_difficulty_vllm import (
     _annotate_row,
     _build_row_identity,
@@ -75,3 +77,27 @@ def test_annotate_row_reuses_existing_when_same_model_without_overwrite():
     assert values[NUM_SAMPLES_COL] == 8
     assert values[DIFFICULTY_MODEL_COL] == "model-a"
     assert values[DIFFICULTY_BY_MODEL_COL] == {"model-a": 0.25}
+
+
+def test_annotate_row_initializes_missing_by_model_columns(monkeypatch: pytest.MonkeyPatch):
+    row = pd.Series(
+        {
+            "prompt": "What is 1+1?",
+            "data_source": "math",
+            "ground_truth": "2",
+        }
+    )
+
+    monkeypatch.setattr(annotate_mod, "_get_thread_session", lambda: None)
+    monkeypatch.setattr(annotate_mod, "_sample_responses", lambda _s, _a, _m: ["2", "2", "1", "2"])
+    monkeypatch.setattr(annotate_mod, "_score", lambda _ds, resp, _gt, _row: 1.0 if resp == "2" else 0.0)
+
+    idx, values = _annotate_row(0, row, DummyArgs())
+
+    assert idx == 0
+    assert DIFFICULTY_BY_MODEL_COL in values
+    assert PASS_RATE_BY_MODEL_COL in values
+    assert NUM_SAMPLES_BY_MODEL_COL in values
+    assert values[PASS_RATE_BY_MODEL_COL]["model-a"] == 0.75
+    assert values[DIFFICULTY_BY_MODEL_COL]["model-a"] == 0.25
+    assert values[NUM_SAMPLES_BY_MODEL_COL]["model-a"] == 4
