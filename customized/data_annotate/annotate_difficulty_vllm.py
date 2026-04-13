@@ -12,12 +12,15 @@ import json
 import logging
 import os
 import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import pandas as pd
 import pyarrow.parquet as pq
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 
 from verl.utils.reward_score import default_compute_score
 
@@ -32,6 +35,14 @@ DIFFICULTY_BY_MODEL_COL = "on_policy_difficulty_by_model"
 PASS_RATE_BY_MODEL_COL = "pass_rate_by_model"
 NUM_SAMPLES_BY_MODEL_COL = "difficulty_num_samples_by_model"
 REQUEST_TIMEOUT_S = 120
+SESSION_POOL_MAXSIZE = 64
+SESSION_POOL_CONNECTIONS = 64
+SESSION_MAX_RETRIES = 3
+SESSION_BACKOFF_FACTOR = 0.5
+
+_THREAD_LOCAL = threading.local()
+_SESSION_REGISTRY_LOCK = threading.Lock()
+_SESSION_REGISTRY: list[requests.Session] = []
 
 
 def parse_args() -> argparse.Namespace:
@@ -111,6 +122,56 @@ def _sample_responses(session: requests.Session, args: argparse.Namespace, messa
     return [_extract_text(choice) for choice in resp.json().get("choices", [])]
 
 
+def _build_retry_policy() -> Retry:
+    return Retry(
+        total=SESSION_MAX_RETRIES,
+        connect=SESSION_MAX_RETRIES,
+        read=SESSION_MAX_RETRIES,
+        status=SESSION_MAX_RETRIES,
+        backoff_factor=SESSION_BACKOFF_FACTOR,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=("HEAD", "GET", "POST", "PUT", "DELETE", "OPTIONS", "TRACE"),
+        raise_on_status=False,
+    )
+
+
+def _create_session() -> requests.Session:
+    session = requests.Session()
+    adapter = HTTPAdapter(
+        pool_connections=SESSION_POOL_CONNECTIONS,
+        pool_maxsize=SESSION_POOL_MAXSIZE,
+        max_retries=_build_retry_policy(),
+    )
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
+def _worker_init() -> None:
+    session = _create_session()
+    _THREAD_LOCAL.session = session
+    with _SESSION_REGISTRY_LOCK:
+        _SESSION_REGISTRY.append(session)
+
+
+def _get_thread_session() -> requests.Session:
+    session = getattr(_THREAD_LOCAL, "session", None)
+    if session is None:
+        session = _create_session()
+        _THREAD_LOCAL.session = session
+        with _SESSION_REGISTRY_LOCK:
+            _SESSION_REGISTRY.append(session)
+    return session
+
+
+def _close_all_sessions() -> None:
+    with _SESSION_REGISTRY_LOCK:
+        sessions = list(_SESSION_REGISTRY)
+        _SESSION_REGISTRY.clear()
+    for session in sessions:
+        session.close()
+
+
 def _score(data_source: str, response: str, ground_truth: Any, row: pd.Series) -> float:
     result = default_compute_score(data_source, response, ground_truth, extra_info=row.get("extra_info"))
     if isinstance(result, dict):
@@ -170,8 +231,7 @@ def _annotate_row(idx: int, row: pd.Series, args: argparse.Namespace) -> tuple[i
     data_source = row["data_source"]
     ground_truth = _extract_ground_truth(row)
 
-    with requests.Session() as session:
-        responses = _sample_responses(session, args, messages)
+    responses = _sample_responses(_get_thread_session(), args, messages)
 
     if not responses:
         raise RuntimeError("No responses returned from vLLM")
@@ -250,44 +310,47 @@ def main() -> None:
     part_files: list[str] = []
     processed_rows = 0
     dry_run_remaining = args.dry_run_n
-    with tempfile.TemporaryDirectory(prefix="annotate_difficulty_parts_") as temp_dir:
-        for chunk_df in _iter_parquet_chunks(args.input_parquet, args.batch_size):
-            if dry_run_remaining is not None:
-                if dry_run_remaining <= 0:
-                    break
-                if len(chunk_df) > dry_run_remaining:
-                    chunk_df = chunk_df.iloc[:dry_run_remaining].copy()
-                dry_run_remaining -= len(chunk_df)
-            else:
-                chunk_df = chunk_df.copy()
+    try:
+        with tempfile.TemporaryDirectory(prefix="annotate_difficulty_parts_") as temp_dir:
+            with ThreadPoolExecutor(max_workers=args.concurrency, initializer=_worker_init) as ex:
+                for chunk_df in _iter_parquet_chunks(args.input_parquet, args.batch_size):
+                    if dry_run_remaining is not None:
+                        if dry_run_remaining <= 0:
+                            break
+                        if len(chunk_df) > dry_run_remaining:
+                            chunk_df = chunk_df.iloc[:dry_run_remaining].copy()
+                        dry_run_remaining -= len(chunk_df)
+                    else:
+                        chunk_df = chunk_df.copy()
 
-            chunk_df["__row_identity"] = _build_row_identity(chunk_df)
-            if prev_df is not None:
-                reused = prev_df.reindex(chunk_df["__row_identity"])
-                for col in merge_cols:
-                    if col in reused:
-                        if col not in chunk_df:
-                            chunk_df[col] = reused[col].to_numpy()
-                        else:
-                            chunk_df[col] = chunk_df[col].combine_first(reused[col].reset_index(drop=True))
+                    chunk_df["__row_identity"] = _build_row_identity(chunk_df)
+                    if prev_df is not None:
+                        reused = prev_df.reindex(chunk_df["__row_identity"])
+                        for col in merge_cols:
+                            if col in reused:
+                                if col not in chunk_df:
+                                    chunk_df[col] = reused[col].to_numpy()
+                                else:
+                                    chunk_df[col] = chunk_df[col].combine_first(reused[col].reset_index(drop=True))
 
-            logger.info("Processing rows %d..%d", processed_rows, processed_rows + len(chunk_df) - 1)
-            with ThreadPoolExecutor(max_workers=args.concurrency) as ex:
-                futures = [ex.submit(_annotate_row, i, chunk_df.iloc[i], args) for i in range(len(chunk_df))]
-                for future in as_completed(futures):
-                    idx, values = future.result()
-                    for key, value in values.items():
-                        chunk_df.at[idx, key] = value
+                    logger.info("Processing rows %d..%d", processed_rows, processed_rows + len(chunk_df) - 1)
+                    futures = [ex.submit(_annotate_row, i, chunk_df.iloc[i], args) for i in range(len(chunk_df))]
+                    for future in as_completed(futures):
+                        idx, values = future.result()
+                        for key, value in values.items():
+                            chunk_df.at[idx, key] = value
 
-            chunk_df = chunk_df.drop(columns="__row_identity")
-            part_path = os.path.join(temp_dir, f"output_part_{len(part_files):05d}.parquet")
-            chunk_df.to_parquet(part_path, index=False)
-            part_files.append(part_path)
-            processed_rows += len(chunk_df)
+                    chunk_df = chunk_df.drop(columns="__row_identity")
+                    part_path = os.path.join(temp_dir, f"output_part_{len(part_files):05d}.parquet")
+                    chunk_df.to_parquet(part_path, index=False)
+                    part_files.append(part_path)
+                    processed_rows += len(chunk_df)
 
-        if not part_files:
-            raise RuntimeError("No rows were processed; nothing to write.")
-        _merge_part_files(part_files, args.output_parquet)
+            if not part_files:
+                raise RuntimeError("No rows were processed; nothing to write.")
+            _merge_part_files(part_files, args.output_parquet)
+    finally:
+        _close_all_sessions()
 
     logger.info("Saved: %s", args.output_parquet)
 
