@@ -13,6 +13,7 @@ import logging
 import os
 import tempfile
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
@@ -309,11 +310,14 @@ def main() -> None:
 
     part_files: list[str] = []
     processed_rows = 0
+    overall_start_wall = time.perf_counter()
+    overall_start_cpu = time.process_time()
     dry_run_remaining = args.dry_run_n
     try:
         with tempfile.TemporaryDirectory(prefix="annotate_difficulty_parts_") as temp_dir:
+            # Keep one shared thread pool across all batches; batch boundaries are only for backpressure.
             with ThreadPoolExecutor(max_workers=args.concurrency, initializer=_worker_init) as ex:
-                for chunk_df in _iter_parquet_chunks(args.input_parquet, args.batch_size):
+                for batch_idx, chunk_df in enumerate(_iter_parquet_chunks(args.input_parquet, args.batch_size)):
                     if dry_run_remaining is not None:
                         if dry_run_remaining <= 0:
                             break
@@ -334,11 +338,35 @@ def main() -> None:
                                     chunk_df[col] = chunk_df[col].combine_first(reused[col].reset_index(drop=True))
 
                     logger.info("Processing rows %d..%d", processed_rows, processed_rows + len(chunk_df) - 1)
+                    batch_wall_start = time.perf_counter()
+                    batch_cpu_start = time.process_time()
+                    submit_wall_start = time.perf_counter()
                     futures = [ex.submit(_annotate_row, i, chunk_df.iloc[i], args) for i in range(len(chunk_df))]
+                    submit_wall_s = time.perf_counter() - submit_wall_start
+
+                    collect_wall_start = time.perf_counter()
                     for future in as_completed(futures):
                         idx, values = future.result()
                         for key, value in values.items():
                             chunk_df.at[idx, key] = value
+                    collect_wall_s = time.perf_counter() - collect_wall_start
+                    batch_wall_s = time.perf_counter() - batch_wall_start
+                    batch_cpu_s = time.process_time() - batch_cpu_start
+                    batch_throughput = len(chunk_df) / batch_wall_s if batch_wall_s > 0 else float("inf")
+                    logger.info(
+                        (
+                            "Batch %d timing | rows=%d | submit=%.3fs | collect=%.3fs | "
+                            "wall=%.3fs | cpu=%.3fs | cpu/wall=%.2f | throughput=%.2f rows/s"
+                        ),
+                        batch_idx,
+                        len(chunk_df),
+                        submit_wall_s,
+                        collect_wall_s,
+                        batch_wall_s,
+                        batch_cpu_s,
+                        batch_cpu_s / batch_wall_s if batch_wall_s > 0 else 0.0,
+                        batch_throughput,
+                    )
 
                     chunk_df = chunk_df.drop(columns="__row_identity")
                     part_path = os.path.join(temp_dir, f"output_part_{len(part_files):05d}.parquet")
@@ -352,6 +380,17 @@ def main() -> None:
     finally:
         _close_all_sessions()
 
+    overall_wall_s = time.perf_counter() - overall_start_wall
+    overall_cpu_s = time.process_time() - overall_start_cpu
+    overall_throughput = processed_rows / overall_wall_s if overall_wall_s > 0 else float("inf")
+    logger.info(
+        "Overall timing | rows=%d | wall=%.3fs | cpu=%.3fs | cpu/wall=%.2f | throughput=%.2f rows/s",
+        processed_rows,
+        overall_wall_s,
+        overall_cpu_s,
+        overall_cpu_s / overall_wall_s if overall_wall_s > 0 else 0.0,
+        overall_throughput,
+    )
     logger.info("Saved: %s", args.output_parquet)
 
 
